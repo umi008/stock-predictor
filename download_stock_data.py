@@ -1,30 +1,39 @@
-import pandas as pd
-import tensorflow as tf
-from sklearn.preprocessing import MinMaxScaler
-import numpy as np
 import yfinance as yf
-import datetime # Importamos para trabajar con fechas
+import numpy as np
+from sklearn.preprocessing import MinMaxScaler
+import tensorflow as tf
 
 # Configuración para usar GPU si está disponible
-tf.config.list_physical_devices('GPU')
+physical_devices = tf.config.list_physical_devices('GPU')
+if physical_devices:
+    try:
+        tf.config.experimental.set_memory_growth(physical_devices[0], True)
+        print("GPU encontrada y memoria de GPU configurada para crecimiento dinámico.")
+    except:
+        # Invalid device or cannot modify virtual devices once initialized.
+        pass
 
 def create_sequences(data, seq_length_val):
     """
     Crea secuencias de datos y sus etiquetas correspondientes para el modelo LSTM.
     """
     X, y = [], []
+    # Asegurarse de que hay suficientes datos para al menos una secuencia y una etiqueta
+    if len(data) <= seq_length_val:
+        return np.array([]), np.array([])
+        
     for i in range(len(data) - seq_length_val):
         X.append(data[i:i + seq_length_val])
         y.append(data[i + seq_length_val])
     return np.array(X), np.array(y)
 
-def train_and_predict_lstm(ticker_name, period="2y", seq_length=60, epochs=2, batch_size=256):
+def train_and_predict_lstm(ticker_name, period="2y", seq_length=30, epochs=2, batch_size=256):
     """
     Descarga datos históricos de un ticker, entrena un modelo LSTM
     y genera predicciones históricas.
     Devuelve también el modelo y el scaler para futuras predicciones.
     """
-    print(f"Descargando datos para {ticker_name}...")
+    print(f"Descargando datos para {ticker_name} (período: {period})...")
     try:
         data = yf.download(ticker_name, period=period)
         if data.empty:
@@ -42,48 +51,61 @@ def train_and_predict_lstm(ticker_name, period="2y", seq_length=60, epochs=2, ba
     scaler = MinMaxScaler(feature_range=(0, 1))
     scaled_data = scaler.fit_transform(data["Close"].values.reshape(-1, 1))
 
+    # Verificar que haya suficientes datos para el seq_length proporcionado
+    if len(scaled_data) < seq_length + 1:
+        print(f"Datos insuficientes para crear al menos una secuencia con seq_length={seq_length} para {ticker_name}.")
+        return None, None, None, None, None, None, None
+
     # Crear conjuntos de entrenamiento y prueba
     train_size = int(len(scaled_data) * 0.9)
     train_data = scaled_data[:train_size]
     test_data = scaled_data[train_size:]
 
-    # Asegúrate de tener suficientes datos para crear secuencias
+    # Asegúrate de tener suficientes datos para crear secuencias en ambos conjuntos
+    # Se ajusta la lógica para verificar que haya al menos seq_length + 1 elementos para formar una secuencia y su etiqueta
     if len(train_data) <= seq_length or len(test_data) <= seq_length:
-        print(f"Datos insuficientes para crear secuencias LSTM con seq_length={seq_length} para {ticker_name}.")
+        print(f"Datos insuficientes para crear secuencias LSTM con seq_length={seq_length} para {ticker_name}. "
+              f"Tamaño de entrenamiento: {len(train_data)}, Tamaño de prueba: {len(test_data)}")
         return None, None, None, None, None, None, None
 
     X_train, y_train = create_sequences(train_data, seq_length)
     X_test, y_test = create_sequences(test_data, seq_length)
+
+    # Verificar si se pudieron crear secuencias
+    if X_train.size == 0 or X_test.size == 0:
+        print(f"No se pudieron crear secuencias de entrenamiento/prueba con seq_length={seq_length} para {ticker_name}. "
+              f"Verifique la longitud de los datos o reduzca seq_length.")
+        return None, None, None, None, None, None, None
 
     # Redimensionar para la entrada de LSTM [muestras, timesteps, características]
     X_train = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
     X_test = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
 
     model = tf.keras.Sequential([
-    # Primera capa LSTM: Más unidades, con regularización L2 para combatir sobreajuste
-    tf.keras.layers.LSTM(128, return_sequences=True,
-                         input_shape=(X_train.shape[1], 1),
-                         kernel_regularizer=tf.keras.regularizers.l2(0.01)),
-    tf.keras.layers.Dropout(0.3), # Aumento del Dropout para mayor regularización
+        # Primera capa LSTM: Más unidades, con regularización L2 para combatir sobreajuste
+        tf.keras.layers.LSTM(128, return_sequences=True,
+                             input_shape=(X_train.shape[1], 1),
+                             kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        tf.keras.layers.Dropout(0.3), # Aumento del Dropout para mayor regularización
 
-    # Segunda capa LSTM: Más unidades, también con regularización L2
-    tf.keras.layers.LSTM(128, kernel_regularizer=tf.keras.regularizers.l2(0.01)),
-    tf.keras.layers.Dropout(0.3), # Aumento del Dropout
+        # Segunda capa LSTM: Más unidades, también con regularización L2
+        tf.keras.layers.LSTM(128, kernel_regularizer=tf.keras.regularizers.l2(0.01)),
+        tf.keras.layers.Dropout(0.3), # Aumento del Dropout
 
-    # Capas Dense (Densely Connected): Aumentar la complejidad de la red
-    tf.keras.layers.Dense(64, activation='relu'), # Capa oculta adicional con activación ReLU
-    tf.keras.layers.Dropout(0.2), # Dropout antes de la capa final
+        # Capas Dense (Densely Connected): Aumentar la complejidad de la red
+        tf.keras.layers.Dense(64, activation='relu'), # Capa oculta adicional con activación ReLU
+        tf.keras.layers.Dropout(0.2), # Dropout antes de la capa final
 
-    tf.keras.layers.Dense(1) # Capa de salida
+        tf.keras.layers.Dense(1) # Capa de salida
     ])
 
     model.compile(optimizer="adam", loss="mean_squared_error")
 
-    print(f"Entrenando modelo LSTM para {ticker_name}...")
-    model.fit(x=X_train, y=y_train, validation_split=0.2, epochs=epochs, workers=6, batch_size=batch_size, verbose=0, callbacks=[
+    print(f"Entrenando modelo LSTM para {ticker_name} (seq_length={seq_length})...")
+    history = model.fit(x=X_train, y=y_train, validation_split=0.2, epochs=epochs, workers=6, batch_size=batch_size, verbose=0, callbacks=[
         tf.keras.callbacks.EarlyStopping(monitor='val_loss', patience=5, restore_best_weights=True),
     ])
-    print(f"Entrenamiento completado para {ticker_name}.")
+    print(f"Entrenamiento completado para {ticker_name}. Pérdida final (validación): {history.history['val_loss'][-1]:.4f}")
 
     # Hacer predicciones históricas
     train_predict = model.predict(X_train)
