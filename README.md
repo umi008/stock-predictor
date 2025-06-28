@@ -3,7 +3,7 @@
 This project demonstrates a Python-based application for stock price prediction using LSTM (Long Short-Term Memory) neural networks. It serves as a showcase of Python programming skills, including data processing, machine learning, and GUI development.
 
 ## Features
-![Application Screenshot](screenshot.png)
+![Application Screenshot](Screenshot.png)
 
 - **Stock Data Retrieval**: Automatically downloads historical stock data using the `yfinance` library.
 - **LSTM Model Training**: Trains an LSTM model to predict stock prices based on historical data.
